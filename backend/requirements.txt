@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+psycopg2-binary
+fugashi
+spacy
+sentence-transformers
+groq
+httpx
+apscheduler
+python-dotenv
+sqlalchemy
