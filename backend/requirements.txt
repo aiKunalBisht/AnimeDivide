@@ -9,3 +9,6 @@ httpx
 apscheduler
 python-dotenv
 sqlalchemy
+langdetect
+beautifulsoup4
+lxml
