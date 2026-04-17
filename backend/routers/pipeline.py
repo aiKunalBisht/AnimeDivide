@@ -8,51 +8,39 @@ Routes
 POST /pipeline/run/{slug}  — run scrape → embed → analyse → store for a show
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+import logging
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
+
+from backend.models.database import Show, get_db
+from backend.services.nlp_pipeline import run_pipeline as run_nlp_pipeline
 
 router = APIRouter()
-
+log = logging.getLogger(__name__)
 
 # ── POST /pipeline/run/{slug} ─────────────────────────────────────────────────
 @router.post("/run/{slug}", summary="Run the full analysis pipeline for a show")
-def run_pipeline(slug: str, background_tasks: BackgroundTasks) -> dict:
+def run_pipeline_endpoint(slug: str, db: Session = Depends(get_db)) -> dict:
     """
-    Execute the end-to-end pipeline for *slug*:
-
-    1. Scrape episode/chapter data      (routers.scraper)
-    2. Embed synopsis text              (sentence-transformers)
-    3. Run narrative arc analysis       (Groq LLM)
-    4. Persist results                  (SQLAlchemy → PostgreSQL)
-
-    The pipeline is dispatched as a background task; the response returns
-    immediately with a job token that the client can poll.
-
-    TODO:
-        - Validate that *slug* exists in the `shows` table.
-        - Generate and persist a real job_id (UUID) in a `jobs` table.
-        - Wire up each pipeline stage as a proper task chain
-          (APScheduler or Celery).
+    Execute the end-to-end pipeline for *slug* synchronously:
+    
+    1. Fetch unanalysed posts
+    2. Detect topic and score sentiment (Groq LLM)
+    3. Persist results iteratively
+    4. Compute and upsert divide scores
     """
     if not slug:
         raise HTTPException(status_code=400, detail="slug must not be empty")
 
-    def _run_pipeline(show_slug: str) -> None:
-        """
-        Stub pipeline — replace with real stage calls:
-            scrape(show_slug)
-            embed(show_slug)
-            analyse(show_slug)
-            store(show_slug)
-        """
-        pass
-
-    background_tasks.add_task(_run_pipeline, slug)
-
-    return {
-        "slug": slug,
-        "job_id": None,          # TODO: generate and return a real UUID
-        "job_status": "queued",
-        "stages": ["scrape", "embed", "analyse", "store"],
-        "message": f"Pipeline queued for '{slug}'. Poll /pipeline/status/{{job_id}} for updates.",
-        "_status": "stub — pipeline stages not yet implemented",
-    }
+    show = db.query(Show).filter(Show.slug == slug).first()
+    
+    if not show:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Show with slug '{slug}' not found in database."
+        )
+        
+    log.info("Starting pipeline for show '%s' (id=%d)", slug, show.id)
+    summary = run_nlp_pipeline(show.id, db)
+    
+    return summary

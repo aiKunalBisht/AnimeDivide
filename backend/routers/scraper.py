@@ -1,46 +1,59 @@
 """
 routers/scraper.py
 ==================
-Endpoint to trigger on-demand scraping of episode/chapter data for a show.
+Endpoint to trigger on-demand scraping of MAL reviews for a show.
 
 Routes
 ------
-POST /scrape/{slug}  — kick off a scrape job for the given show
+POST /scrape/{slug}  — scrape reviews for the given show, persist to raw_posts
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from backend.models.database import Show, get_db
+from backend.services.mal_scraper import scrape_reviews, save_reviews
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 
 # ── POST /scrape/{slug} ───────────────────────────────────────────────────────
-@router.post("/{slug}", summary="Scrape episode data for a show")
-def scrape_show(slug: str, background_tasks: BackgroundTasks) -> dict:
+
+@router.post("/{slug}", summary="Scrape MAL reviews for a show")
+def scrape_show(slug: str, db: Session = Depends(get_db)) -> dict:
     """
-    Trigger a scrape job that fetches episode/chapter metadata for *slug*
-    from MyAnimeList (and any configured secondary sources).
+    Look up the show by *slug*, scrape its MAL reviews, and persist
+    new posts into the ``raw_posts`` table.
 
-    The job is dispatched to a background worker so the request returns
-    immediately with a job token.
-
-    TODO:
-        - Validate that *slug* exists in the `shows` table.
-        - Enqueue a Celery / APScheduler task instead of a background thread.
-        - Persist fetched episodes into the `episodes` table.
+    Returns
+    -------
+    dict
+        ``{"show": slug, "new_posts": <int>}``
     """
     if not slug:
         raise HTTPException(status_code=400, detail="slug must not be empty")
 
-    # Placeholder background task (no-op until scraper service is implemented)
-    def _scrape_job(show_slug: str) -> None:
-        """Stub — replace with real MAL / scraper call."""
-        pass
+    # ── Look up show ──────────────────────────────────────────────────────
+    show = db.query(Show).filter(Show.slug == slug).first()
 
-    background_tasks.add_task(_scrape_job, slug)
+    if show is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Show with slug '{slug}' not found in database.",
+        )
+
+    # ── Scrape ────────────────────────────────────────────────────────────
+    log.info("Scraping reviews for '%s' (mal_id=%d)…", slug, show.mal_id)
+    reviews = scrape_reviews(mal_id=show.mal_id, show_id=show.id)
+
+    # ── Persist ───────────────────────────────────────────────────────────
+    new_posts = save_reviews(reviews, db)
 
     return {
-        "slug": slug,
-        "job_status": "queued",
-        "message": f"Scrape job queued for '{slug}'.",
-        "_status": "stub — scraper service not yet implemented",
+        "show": slug,
+        "reviews_scraped": len(reviews),
+        "new_posts": new_posts,
     }
